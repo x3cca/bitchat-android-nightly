@@ -21,6 +21,17 @@ require(
     "BITCHAT_GITHUB_RELEASE_CERT_SHA256 must be a SHA-256 certificate fingerprint"
 }
 
+// BEGIN BITCHAT NIGHTLY RELEASE REPOSITORY
+val nightlyReleaseRepository = providers
+    .environmentVariable("BITCHAT_GITHUB_RELEASE_REPOSITORY")
+    .orElse(providers.environmentVariable("GITHUB_REPOSITORY"))
+    .getOrElse("")
+    .trim()
+require(nightlyReleaseRepository.matches(Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))) {
+    "GITHUB_REPOSITORY or BITCHAT_GITHUB_RELEASE_REPOSITORY must be owner/repository"
+}
+// END BITCHAT NIGHTLY RELEASE REPOSITORY
+
 android {
     namespace = "com.bitchat.android"
     compileSdk = libs.versions.compileSdk.get().toInt()
@@ -30,13 +41,21 @@ android {
         applicationId = "com.bitchat.droid"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 36
-        versionName = "1.7.5"
+        versionCode = 1900000001
+        versionName = "1.7.5-nightly.20260805.094657e"
         buildConfigField(
             "String",
             "GITHUB_RELEASE_CERT_SHA256",
             "\"$normalizedGithubReleaseCertSha256\""
         )
+
+        // BEGIN BITCHAT NIGHTLY BUILD CONFIG
+        buildConfigField(
+            "String",
+            "GITHUB_RELEASE_REPOSITORY",
+            "\"$nightlyReleaseRepository\""
+        )
+        // END BITCHAT NIGHTLY BUILD CONFIG
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -84,7 +103,8 @@ android {
 
     splits {
         abi {
-            isEnable = enableSplits
+            isEnable = enableSplits &&
+                providers.environmentVariable("BITCHAT_NIGHTLY_UNIVERSAL_ONLY").orNull != "1"
             reset()
             include("arm64-v8a", "x86_64", "armeabi-v7a", "x86")
             isUniversalApk = true  // For F-Droid and fallback
