@@ -1,6 +1,7 @@
 package com.bitchat.android.util
 
 import android.util.Log
+import com.bitchat.android.BuildConfig
 import com.bitchat.android.net.ArtiTorManager
 import com.bitchat.android.net.OkHttpProvider
 import kotlinx.coroutines.Dispatchers
@@ -18,8 +19,9 @@ import java.util.concurrent.TimeUnit
  */
 object GitHubReleaseClient {
     private const val TAG = "GitHubAPI"
-    private const val GITHUB_API_URL = "https://api.github.com/repos/permissionlesstech/bitchat-android/releases/latest"
-    private const val USER_AGENT = "BitChat-Android"
+    private val GITHUB_API_URL = "https://api.github.com/repos/${BuildConfig.GITHUB_RELEASE_REPOSITORY}/releases/latest"
+    private const val USER_AGENT = "bitchat-nightly-Android"
+    private const val NIGHTLY_APK_NAME = "bitchat-nightly-universal.apk"
     private const val CACHE_TTL_MILLIS = 10 * 60 * 1000L
     private const val MAX_FETCH_ATTEMPTS = 3
     private const val ROUTE_READY_TIMEOUT_MILLIS = 60_000L
@@ -194,7 +196,7 @@ object GitHubReleaseClient {
                 val asset = assets.getJSONObject(i)
                 val name = asset.optString("name", "")
 
-                if (name.contains("universal", ignoreCase = true) && name.endsWith(".apk")) {
+                if (name == NIGHTLY_APK_NAME) {
                     val downloadUrl = asset.optString("browser_download_url", "")
                     val size = asset.optLong("size", 0L)
 
