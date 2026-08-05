@@ -1,0 +1,404 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Publish even when this upstream commit was already released
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  SETUP_JAVA_VERSION: 21.0.11+10.0.LTS
+  UPSTREAM_REPOSITORY: permissionlesstech/bitchat-android
+  VERSION_CODE_BASE: "1900000000"
+
+jobs:
+  nightly:
+    name: Build and publish trusted nightly
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out automation branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pinned JDK
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.SETUP_JAVA_VERSION }}
+
+      - name: Set up and validate Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+
+      - name: Sync exact upstream branch and decide whether to publish
+        id: plan
+        env:
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --prune upstream main
+          git fetch --force origin '+refs/tags/nightly-*:refs/tags/nightly-*' || true
+          upstream_sha="$(git rev-parse upstream/main)"
+
+          git config --local credential.helper '!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+          trap 'git config --local --unset-all credential.helper >/dev/null 2>&1 || true' EXIT
+          git push --force origin refs/remotes/upstream/main:refs/heads/upstream-main
+
+          existing_tag=""
+          while IFS= read -r tag; do
+            if git show -s --format=%B "$tag" | grep -Fqx "Upstream-Commit: $upstream_sha"; then
+              existing_tag="$tag"
+              break
+            fi
+          done < <(git for-each-ref --format='%(refname:short)' 'refs/tags/nightly-*')
+
+          skip=false
+          if [ -n "$existing_tag" ] && [ "$FORCE_BUILD" != "true" ]; then
+            skip=true
+            echo "Upstream $upstream_sha was already published as $existing_tag; nothing to do."
+          fi
+          {
+            echo "upstream_sha=$upstream_sha"
+            echo "existing_tag=$existing_tag"
+            echo "skip=$skip"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Record successful no-op
+        if: steps.plan.outputs.skip == 'true'
+        env:
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+          EXISTING_TAG: ${{ steps.plan.outputs.existing_tag }}
+        run: |
+          {
+            echo "## Nightly already current"
+            echo
+            echo "Upstream commit \`$UPSTREAM_SHA\` was already published as \`$EXISTING_TAG\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Derive signing certificate fingerprint
+        if: steps.plan.outputs.skip != 'true'
+        id: cert
+        env:
+          KEYSTORE_B64: ${{ secrets.NIGHTLY_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NIGHTLY_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NIGHTLY_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NIGHTLY_KEY_PASSWORD }}
+          EXPECTED_CERT_SHA256: ${{ vars.NIGHTLY_CERT_SHA256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variable in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            value="$(printenv "$variable" || true)"
+            if [ -z "$value" ]; then
+              echo "error: required nightly signing secret $variable is empty" >&2
+              exit 1
+            fi
+          done
+          signing_dir="$(mktemp -d)"
+          cleanup() { rm -rf -- "$signing_dir"; }
+          trap cleanup EXIT
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$signing_dir/nightly.jks"
+          printf '%s' "$KEYSTORE_PASSWORD" > "$signing_dir/store.pass"
+          keytool -exportcert \
+            -keystore "$signing_dir/nightly.jks" \
+            -storepass:file "$signing_dir/store.pass" \
+            -alias "$KEY_ALIAS" \
+            -file "$signing_dir/certificate.der" >/dev/null
+          cert_sha256="$(sha256sum "$signing_dir/certificate.der" | awk '{print $1}')"
+          if ! [[ "$cert_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "error: could not derive signing certificate SHA-256" >&2
+            exit 1
+          fi
+          if [ -n "$EXPECTED_CERT_SHA256" ] && [ "$cert_sha256" != "${EXPECTED_CERT_SHA256,,}" ]; then
+            echo "error: signing certificate does not match the repository fingerprint" >&2
+            exit 1
+          fi
+          echo "sha256=$cert_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Create and validate branded source commit
+        if: steps.plan.outputs.skip != 'true'
+        id: source
+        env:
+          CERT_SHA256: ${{ steps.cert.outputs.sha256 }}
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$RUNNER_TEMP/nightly-worktree"
+          git worktree add --detach "$worktree" "$UPSTREAM_SHA"
+          upstream_version="$(python - "$worktree/app/build.gradle.kts" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+          text = Path(sys.argv[1]).read_text(encoding="utf-8")
+          matches = re.findall(r'^\s*versionName\s*=\s*"([^"]+)"\s*$', text, re.MULTILINE)
+          if len(matches) != 1:
+              raise SystemExit(f"expected one upstream versionName; found {len(matches)}")
+          print(matches[0])
+          PY
+          )"
+          build_date="$(date -u +%Y%m%d)"
+          build_date_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          short_sha="${UPSTREAM_SHA:0:7}"
+          version_name="${upstream_version}-nightly.${build_date}.${short_sha}"
+          version_code="$((VERSION_CODE_BASE + GITHUB_RUN_NUMBER))"
+          if [ "$version_code" -gt 2100000000 ]; then
+            echo "error: generated Android version code exceeds 2100000000" >&2
+            exit 1
+          fi
+          tag="nightly-$(date -u +%Y%m%d-%H%M)-${UPSTREAM_SHA:0:12}"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            tag="${tag}-run${GITHUB_RUN_NUMBER}"
+          fi
+
+          branding_args=(
+            --worktree "$worktree"
+            --version-name "$version_name"
+            --version-code "$version_code"
+            --repository "$GITHUB_REPOSITORY"
+            --upstream-commit "$UPSTREAM_SHA"
+            --cert-sha256 "$CERT_SHA256"
+          )
+          python nightly/apply_branding.py "${branding_args[@]}"
+          first_overlay="$(git -C "$worktree" diff --binary | sha256sum | awk '{print $1}')"
+          python nightly/apply_branding.py "${branding_args[@]}"
+          second_overlay="$(git -C "$worktree" diff --binary | sha256sum | awk '{print $1}')"
+          if [ "$first_overlay" != "$second_overlay" ]; then
+            echo "error: branding overlay is not idempotent" >&2
+            exit 1
+          fi
+          python nightly/validate_branding.py "${branding_args[@]}"
+
+          git -C "$worktree" add -A
+          git -C "$worktree" commit \
+            -m "Brand bitchat nightly for ${UPSTREAM_SHA:0:12}" \
+            -m "Generated-By: nightly/apply_branding.py" \
+            -m "Upstream-Commit: $UPSTREAM_SHA" \
+            -m "Version-Name: $version_name" \
+            -m "Version-Code: $version_code"
+          branded_sha="$(git -C "$worktree" rev-parse HEAD)"
+          git tag "$tag" "$branded_sha"
+          {
+            echo "worktree=$worktree"
+            echo "branded_sha=$branded_sha"
+            echo "version_name=$version_name"
+            echo "version_code=$version_code"
+            echo "tag=$tag"
+            echo "build_date_iso=$build_date_iso"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run unit tests and lint
+        if: steps.plan.outputs.skip != 'true'
+        working-directory: ${{ steps.source.outputs.worktree }}
+        env:
+          BITCHAT_GITHUB_RELEASE_CERT_SHA256: ${{ steps.cert.outputs.sha256 }}
+          BITCHAT_GITHUB_RELEASE_REPOSITORY: ${{ github.repository }}
+          BITCHAT_NIGHTLY_UNIVERSAL_ONLY: "1"
+        run: ./gradlew testDebugUnitTest lintDebug
+
+      - name: Build one unsigned universal phone APK
+        if: steps.plan.outputs.skip != 'true'
+        id: build
+        working-directory: ${{ steps.source.outputs.worktree }}
+        env:
+          BITCHAT_GITHUB_RELEASE_CERT_SHA256: ${{ steps.cert.outputs.sha256 }}
+          BITCHAT_GITHUB_RELEASE_REPOSITORY: ${{ github.repository }}
+          BITCHAT_NIGHTLY_UNIVERSAL_ONLY: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:clean :app:assembleRelease
+          mapfile -t unsigned_apks < <(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*-release-unsigned.apk' -print)
+          if [ "${#unsigned_apks[@]}" -ne 1 ]; then
+            printf 'error: expected one unsigned universal APK; found %s\n' "${#unsigned_apks[@]}" >&2
+            printf '%s\n' "${unsigned_apks[@]}" >&2
+            exit 1
+          fi
+          artifact_dir="$RUNNER_TEMP/nightly-artifacts"
+          mkdir -p "$artifact_dir"
+          cp "${unsigned_apks[0]}" "$artifact_dir/bitchat-nightly-universal-unsigned.apk"
+          echo "artifact_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Sign and verify canonical APK
+        if: steps.plan.outputs.skip != 'true'
+        id: sign
+        env:
+          KEYSTORE_B64: ${{ secrets.NIGHTLY_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NIGHTLY_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NIGHTLY_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NIGHTLY_KEY_PASSWORD }}
+          CERT_SHA256: ${{ steps.cert.outputs.sha256 }}
+          VERSION_NAME: ${{ steps.source.outputs.version_name }}
+          VERSION_CODE: ${{ steps.source.outputs.version_code }}
+          ARTIFACT_DIR: ${{ steps.build.outputs.artifact_dir }}
+          WORKTREE: ${{ steps.source.outputs.worktree }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$WORKTREE/tools/reproducible-builds/TOOLCHAIN.env"
+          build_tools="$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_VERSION"
+          if [ ! -x "$build_tools/apksigner" ] || [ ! -x "$build_tools/zipalign" ] || [ ! -x "$build_tools/aapt" ]; then
+            if [ -e "$build_tools" ]; then
+              echo "error: incomplete Android Build Tools at $build_tools" >&2
+              exit 1
+            fi
+            "$WORKTREE/tools/reproducible-builds/install-android-build-tools.sh" "$ANDROID_SDK_ROOT"
+          fi
+          signing_dir="$(mktemp -d)"
+          cleanup() { rm -rf -- "$signing_dir"; }
+          trap cleanup EXIT
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$signing_dir/nightly.jks"
+          printf '%s' "$KEYSTORE_PASSWORD" > "$signing_dir/store.pass"
+          printf '%s' "$KEY_PASSWORD" > "$signing_dir/key.pass"
+          unsigned="$ARTIFACT_DIR/bitchat-nightly-universal-unsigned.apk"
+          aligned="$signing_dir/bitchat-nightly-aligned.apk"
+          signed="$ARTIFACT_DIR/bitchat-nightly-universal.apk"
+          "$build_tools/zipalign" -P 16 -f 4 "$unsigned" "$aligned"
+          "$build_tools/apksigner" sign \
+            --ks "$signing_dir/nightly.jks" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "file:$signing_dir/store.pass" \
+            --key-pass "file:$signing_dir/key.pass" \
+            --min-sdk-version 26 \
+            --v1-signing-enabled false \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled false \
+            --out "$signed" \
+            "$aligned"
+          "$build_tools/apksigner" verify --verbose --print-certs "$signed"
+          python nightly/verify_apk.py \
+            --apk "$signed" \
+            --aapt "$build_tools/aapt" \
+            --apksigner "$build_tools/apksigner" \
+            --version-name "$VERSION_NAME" \
+            --version-code "$VERSION_CODE" \
+            --cert-sha256 "$CERT_SHA256"
+          rm -f "$unsigned"
+          apk_sha256="$(sha256sum "$signed" | awk '{print $1}')"
+          printf '%s  %s\n' "$apk_sha256" "bitchat-nightly-universal.apk" > "$ARTIFACT_DIR/SHA256SUMS"
+          (cd "$ARTIFACT_DIR" && sha256sum -c SHA256SUMS)
+          echo "apk_sha256=$apk_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Push branded source refs and publish release
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_DIR: ${{ steps.build.outputs.artifact_dir }}
+          APK_SHA256: ${{ steps.sign.outputs.apk_sha256 }}
+          BUILD_DATE_ISO: ${{ steps.source.outputs.build_date_iso }}
+          BRANDED_SHA: ${{ steps.source.outputs.branded_sha }}
+          CERT_SHA256: ${{ steps.cert.outputs.sha256 }}
+          TAG: ${{ steps.source.outputs.tag }}
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+          VERSION_CODE: ${{ steps.source.outputs.version_code }}
+          VERSION_NAME: ${{ steps.source.outputs.version_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --local credential.helper '!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+          trap 'git config --local --unset-all credential.helper >/dev/null 2>&1 || true' EXIT
+          git push --force origin "$BRANDED_SHA:refs/heads/nightly-build"
+          git push origin "refs/tags/$TAG"
+
+          release_notes="$RUNNER_TEMP/nightly-release-notes.md"
+          cat > "$release_notes" <<EOF
+          # Unofficial automated nightly build
+
+          **This build is unofficial, may be unstable, and is not endorsed by the upstream bitchat project.**
+
+          - Full upstream commit: $UPSTREAM_SHA
+          - Upstream commit: https://github.com/$UPSTREAM_REPOSITORY/commit/$UPSTREAM_SHA
+          - Branded source commit: $BRANDED_SHA
+          - Exact tagged source: https://github.com/$GITHUB_REPOSITORY/tree/$TAG
+          - Version name: $VERSION_NAME
+          - Version code: $VERSION_CODE
+          - Build date (UTC): $BUILD_DATE_ISO
+          - APK SHA256: $APK_SHA256
+          - Signing certificate SHA-256: $CERT_SHA256
+
+          **Installation:** this nightly uses application ID **com.bitchat.droid.nightly**, so it can be installed alongside the official app. It has separate app data, identity, settings, permissions, and notifications. If you installed an earlier release from this repository that used **com.bitchat.droid**, uninstall that one once. Future nightlies update normally because every release uses the same persistent nightly signing key.
+
+          <!-- upstream-commit:$UPSTREAM_SHA -->
+          EOF
+          gh release create "$TAG" \
+            "$ARTIFACT_DIR/bitchat-nightly-universal.apk" \
+            "$ARTIFACT_DIR/SHA256SUMS" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "bitchat nightly ${BUILD_DATE_ISO:0:10} (${UPSTREAM_SHA:0:7})" \
+            --notes-file "$release_notes" \
+            --latest
+
+      - name: Retain the latest 30 release objects
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t old_release_ids < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | select((.draft | not) and (.tag_name | startswith("nightly-"))) | [.published_at, .id] | @tsv' |
+              sort -r |
+              tail -n +31 |
+              cut -f2
+          )
+          for release_id in "${old_release_ids[@]}"; do
+            [ -n "$release_id" ] || continue
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"
+          done
+
+      - name: Summarize published nightly
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          APK_SHA256: ${{ steps.sign.outputs.apk_sha256 }}
+          BRANDED_SHA: ${{ steps.source.outputs.branded_sha }}
+          TAG: ${{ steps.source.outputs.tag }}
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+          VERSION_CODE: ${{ steps.source.outputs.version_code }}
+          VERSION_NAME: ${{ steps.source.outputs.version_name }}
+        run: |
+          {
+            echo "## Published bitchat nightly"
+            echo
+            echo "- Upstream: \`$UPSTREAM_SHA\`"
+            echo "- Branded source: \`$BRANDED_SHA\`"
+            echo "- Tag: \`$TAG\`"
+            echo "- Version: \`$VERSION_NAME ($VERSION_CODE)\`"
+            echo "- APK SHA-256: \`$APK_SHA256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary worktree
+        if: always() && steps.source.outputs.worktree != ''
+        env:
+          WORKTREE: ${{ steps.source.outputs.worktree }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree remove --force "$WORKTREE"
+          git worktree prune

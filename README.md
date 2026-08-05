@@ -1,3 +1,66 @@
+# bitchat Android nightly
+
+> [!WARNING]
+> These are **unofficial automated nightly builds**. They are not endorsed by
+> the upstream bitchat project, and builds from upstream `main` may be unstable.
+
+This repository automatically tracks
+[`permissionlesstech/bitchat-android`](https://github.com/permissionlesstech/bitchat-android)
+`main` and publishes one signed, universal phone APK when the upstream commit
+changes.
+
+## Install with Obtainium
+
+- Repository URL: `https://github.com/x3cca/bitchat-android-nightly`
+- Recommended asset regex: `bitchat-nightly-universal\.apk`
+
+First installation:
+
+1. Back up anything important.
+2. Add this repository URL to Obtainium and set the asset regex above.
+3. Install the latest `bitchat-nightly-universal.apk` release asset.
+
+After the first nightly is installed, later nightlies update normally because
+all releases use the same persistent signing key. Its application ID is
+`com.bitchat.droid.nightly`, so it can be installed alongside the official app.
+The two installations have separate app data, identity, settings, permissions,
+and notifications.
+
+If you installed an earlier release from this repository that used
+`com.bitchat.droid`, uninstall that one once before installing the new nightly.
+
+## Source, automation, and verification
+
+The default `main` branch contains the automation, deterministic branding
+overlay, and this documentation. `upstream-main` is force-synced to the exact
+unmodified upstream commit. `nightly-build` is force-updated to the branded
+source commit used for the latest APK. Every release also has an immutable
+`nightly-*` tag, and its release notes link to that exact tagged source.
+
+The scheduled workflow runs daily at 09:00 UTC and can also be dispatched
+manually. It applies `nightly/apply_branding.py` to a clean upstream worktree,
+runs `testDebugUnitTest` and `lintDebug`, builds only one universal phone APK,
+signs it with Android Build Tools 37.0.0, and verifies the package ID, app name,
+version, checksum, and signer before publication. The in-app **Prepare App for
+Sharing** path is branded to query this repository's latest release, require
+`bitchat-nightly-universal.apk`, verify its SHA-256, and trust the same nightly
+certificate.
+
+Signing certificate SHA-256:
+
+```text
+b199c0c4094c4762c2da958bd25f3a158bde59bedba78dc95d0cacc1e8bfe1fb
+```
+
+The source remains licensed under GPL-3.0, with upstream history, copyright
+notices, attribution, and [`LICENSE.md`](LICENSE.md) preserved. Do not report a
+nightly-only problem to upstream unless it can first be reproduced on an
+official upstream build.
+
+---
+
+## Upstream README
+
 <img width="256" height="256" alt="icon_128x128@2x" src="https://github.com/user-attachments/assets/90133f83-b4f6-41c6-aab9-25d0859d2a47" />
 
 ## bitchat for Android
@@ -27,7 +90,7 @@ This is the Android implementation of bitchat, fully protocol-compatible with th
 
 ## License
 
-This project is released into the public domain. See the [LICENSE](LICENSE.md) file for details.
+This project is licensed under GPL-3.0. See the [LICENSE](LICENSE.md) file for details.
 
 ## Features
 

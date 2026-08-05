@@ -72,5 +72,12 @@ tools/arti-build/.arti-source/
 tools/arti-build/target/
 .reproducible-build/
 
+# Nightly signing and recovery material
+.nightly-signing/
+nightly-secrets/
+nightly-release.jks
+nightly-signing-recovery*
+*.aes256
+
 # JVM heap dumps (a Gradle daemon OOM drops these in the repo root)
 *.hprof
