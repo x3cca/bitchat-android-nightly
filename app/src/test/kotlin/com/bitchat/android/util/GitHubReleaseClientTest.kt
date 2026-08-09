@@ -21,7 +21,7 @@ class GitHubReleaseClientTest {
               "body": "",
               "assets": [
                 {
-                  "name": "bitchat-android-universal.apk",
+                  "name": "bitchat-nightly-universal.apk",
                   "browser_download_url": "https://example.test/bitchat.apk",
                   "size": 49283072,
                   "digest": "sha256:$digest"
@@ -44,10 +44,10 @@ class GitHubReleaseClientTest {
             """
             {
               "tag_name": "1.7.6",
-              "body": "bitchat-android-universal.apk: $digest",
+              "body": "bitchat-nightly-universal.apk: $digest",
               "assets": [
                 {
-                  "name": "bitchat-android-universal.apk",
+                  "name": "bitchat-nightly-universal.apk",
                   "browser_download_url": "https://example.test/bitchat.apk",
                   "size": 10
                 }
@@ -87,7 +87,7 @@ class GitHubReleaseClientTest {
             universalApkUrl = "https://example.test/bitchat.apk",
             universalApkSha256 = null,
             universalApkSize = 10,
-            universalApkName = "bitchat-android-universal.apk"
+            universalApkName = "bitchat-nightly-universal.apk"
         )
 
         assertTrue(GitHubReleaseClient.isNewerVersion("1.7.5", release))
