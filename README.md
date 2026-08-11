@@ -31,11 +31,11 @@ If you installed an earlier release from this repository that used
 
 ## Source, automation, and verification
 
-The default `main` branch contains the automation, deterministic branding
-overlay, and this documentation. `upstream-main` is force-synced to the exact
-unmodified upstream commit. `nightly-build` is force-updated to the branded
-source commit used for the latest APK. Every release also has an immutable
-`nightly-*` tag, and its release notes link to that exact tagged source.
+The default `main` branch periodically merges upstream code while retaining
+this repository's workflows, deterministic branding overlay, and documentation.
+`nightly-build` is force-updated to the branded source commit used for the
+latest APK. Every release also has an immutable `nightly-*` tag, records the
+exact unmodified upstream commit, and links to the exact tagged source.
 
 The scheduled workflow runs daily at 09:00 UTC and can also be dispatched
 manually. It applies `nightly/apply_branding.py` to a clean upstream worktree,

@@ -52,7 +52,6 @@ jobs:
         id: plan
         env:
           FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
-          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -63,10 +62,6 @@ jobs:
           git fetch --prune upstream main
           git fetch --force origin '+refs/tags/nightly-*:refs/tags/nightly-*' || true
           upstream_sha="$(git rev-parse upstream/main)"
-
-          git config --local credential.helper '!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
-          trap 'git config --local --unset-all credential.helper >/dev/null 2>&1 || true' EXIT
-          git push --force origin refs/remotes/upstream/main:refs/heads/upstream-main
 
           existing_tag=""
           while IFS= read -r tag; do

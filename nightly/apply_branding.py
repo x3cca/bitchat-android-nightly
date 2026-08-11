@@ -74,6 +74,22 @@ def _replace_once(text: str, old: str, new: str, description: str) -> str:
     return text.replace(old, new, 1)
 
 
+def _replace_regex_once(
+    text: str,
+    pattern: str,
+    replacement: str,
+    description: str,
+    *,
+    already_applied: str | None = None,
+) -> str:
+    if already_applied is not None and already_applied in text:
+        return text
+    updated, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        raise BrandingError(f"expected exactly one {description}; found {count}")
+    return updated
+
+
 def _insert_marker_block(text: str, start: str, end: str, block: str, anchor: str, description: str) -> str:
     start_count = text.count(start)
     end_count = text.count(end)
@@ -427,25 +443,61 @@ def update_internal_broadcast_identifiers(worktree: Path) -> None:
 def update_release_client(worktree: Path) -> None:
     path = worktree / "app/src/main/java/com/bitchat/android/util/GitHubReleaseClient.kt"
     text = _read(path)
-    text = _replace_once(text, "import android.util.Log\n", "import android.util.Log\nimport com.bitchat.android.BuildConfig\n", "BuildConfig import")
-    text = _replace_once(
+    text = _replace_regex_once(
         text,
-        '    private const val GITHUB_API_URL = "https://api.github.com/repos/permissionlesstech/bitchat-android/releases/latest"',
-        '    private val GITHUB_API_URL = "https://api.github.com/repos/${BuildConfig.GITHUB_RELEASE_REPOSITORY}/releases/latest"',
+        r'^(import com\.bitchat\.android\.)',
+        r'import com.bitchat.android.BuildConfig\n\1',
+        "BuildConfig import",
+        already_applied="import com.bitchat.android.BuildConfig\n",
+    )
+    nightly_api_url = (
+        '        private val GITHUB_API_URL =\n'
+        '            "https://api.github.com/repos/${BuildConfig.GITHUB_RELEASE_REPOSITORY}/releases/latest"'
+    )
+    text = _replace_regex_once(
+        text,
+        r'^\s{8}private const val GITHUB_API_URL\s*=\s*(?:\n\s*)?'
+        r'"https://api\.github\.com/repos/permissionlesstech/bitchat-android/releases/latest"$',
+        nightly_api_url,
         "GitHub release API URL",
+        already_applied=nightly_api_url,
+    )
+    nightly_source_url = (
+        '            latestApkUrl =\n'
+        '                "https://github.com/${BuildConfig.GITHUB_RELEASE_REPOSITORY}/releases/latest/" +\n'
+        f'                "download/{APK_NAME}"'
+    )
+    text = _replace_regex_once(
+        text,
+        r'^\s{12}latestApkUrl\s*=\s*'
+        r'"https://github\.com/permissionlesstech/bitchat-android/releases/latest/"\s*\+\s*\n\s*'
+        r'"download/bitchat-android-universal\.apk"$',
+        nightly_source_url,
+        "GitHub release download URL",
+        already_applied=nightly_source_url,
     )
     text = _replace_once(text, '    private const val USER_AGENT = "BitChat-Android"', '    private const val USER_AGENT = "bitchat-nightly-Android"', "GitHub user agent")
-    text = _replace_once(
+    text = _replace_regex_once(
         text,
-        '    private const val CACHE_TTL_MILLIS = 10 * 60 * 1000L',
-        f'    private const val NIGHTLY_APK_NAME = "{APK_NAME}"\n    private const val CACHE_TTL_MILLIS = 10 * 60 * 1000L',
+        r'^(\s{8}private const val CACHE_TTL_MILLIS\s*=\s*[^\n]+)$',
+        f'        private const val NIGHTLY_APK_NAME = "{APK_NAME}"\n'
+        r'\1',
         "nightly asset-name constant",
+        already_applied=f'        private const val NIGHTLY_APK_NAME = "{APK_NAME}"',
     )
-    text = _replace_once(
+    nightly_asset_check = (
+        '                if (name == NIGHTLY_APK_NAME &&\n'
+        '                    url.startsWith("https://")\n'
+        '                ) {'
+    )
+    text = _replace_regex_once(
         text,
-        '                if (name.contains("universal", ignoreCase = true) && name.endsWith(".apk")) {',
-        "                if (name == NIGHTLY_APK_NAME) {",
+        r'^\s{16}if \(name\.contains\("universal", ignoreCase = true\) &&\s*'
+        r'name\.endsWith\("\.apk"(?:, ignoreCase = true)?\)'
+        r'(?:\s*&&\s*url\.startsWith\("https://"\))?\s*\) \{',
+        nightly_asset_check,
         "universal APK selection",
+        already_applied=nightly_asset_check,
     )
     _write_if_changed(path, text)
 

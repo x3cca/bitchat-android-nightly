@@ -102,7 +102,7 @@ def validate_code(worktree: Path, version_name: str, version_code: int, reposito
     _require("BuildConfig.GITHUB_RELEASE_REPOSITORY" in client, "release client does not use injected repository")
     _require("permissionlesstech/bitchat-android/releases/latest" not in client, "release client still points at upstream")
     _require(f'private const val NIGHTLY_APK_NAME = "{APK_NAME}"' in client, "release client asset name is wrong")
-    _require("if (name == NIGHTLY_APK_NAME)" in client, "release client does not require the canonical nightly asset")
+    _require("if (name == NIGHTLY_APK_NAME" in client, "release client does not require the canonical nightly asset")
 
     manifest = _read(worktree / "app/src/main/AndroidManifest.xml")
     _require(manifest.count(f'android:name="{FORCE_FINISH_PERMISSION}"') == 2, "nightly force-finish permission is wrong")
