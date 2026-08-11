@@ -145,6 +145,11 @@ jobs:
           set -euo pipefail
           worktree="$RUNNER_TEMP/nightly-worktree"
           git worktree add --detach "$worktree" "$UPSTREAM_SHA"
+          if git show-ref --verify --quiet refs/remotes/origin/nightly-build; then
+            git -C "$worktree" restore \
+              --source=refs/remotes/origin/nightly-build \
+              --staged --worktree -- .github/workflows
+          fi
           upstream_version="$(python - "$worktree/app/build.gradle.kts" <<'PY'
           import re
           import sys
