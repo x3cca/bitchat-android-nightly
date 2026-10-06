@@ -1,0 +1,11 @@
+{
+  "applicationId": "com.bitchat.droid.nightly",
+  "branding": "bitchat nightly",
+  "releaseAsset": "bitchat-nightly-universal.apk",
+  "releaseRepository": "x3cca/bitchat-android-nightly",
+  "schemaVersion": 1,
+  "signingCertificateSha256": "b199c0c4094c4762c2da958bd25f3a158bde59bedba78dc95d0cacc1e8bfe1fb",
+  "upstreamCommit": "6803d6d73dadd047b4c406ee6f83ba6e92e7eeec",
+  "versionCode": 1900000068,
+  "versionName": "2.0.2-nightly.20261006.6803d6d"
+}
