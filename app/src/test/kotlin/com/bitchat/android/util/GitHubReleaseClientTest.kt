@@ -211,7 +211,7 @@ class GitHubReleaseClientTest {
               "tag_name": "v1.7.6",
               "assets": [
                 {
-                  "name": "bitchat-android-universal.apk",
+                  "name": "bitchat-nightly-universal.apk",
                   "browser_download_url": "https://downloads.example/bitchat-universal.apk",
                   "size": 25165824
                 }
