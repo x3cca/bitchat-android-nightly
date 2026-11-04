@@ -3,6 +3,7 @@ package com.bitchat.android.util
 import android.content.Context
 import android.util.Log
 import androidx.core.content.edit
+import com.bitchat.android.BuildConfig
 import com.bitchat.android.net.ArtiTorManager
 import com.bitchat.android.net.OkHttpProvider
 import kotlinx.coroutines.CancellationException
@@ -36,19 +37,21 @@ internal class GitHubReleaseClient(
 ) : LatestReleaseProvider {
     companion object {
         private const val TAG = "GitHubRelease"
-        private const val GITHUB_API_URL =
-            "https://api.github.com/repos/permissionlesstech/bitchat-android/releases/latest"
+        private val GITHUB_API_URL =
+            "https://api.github.com/repos/${BuildConfig.GITHUB_RELEASE_REPOSITORY}/releases/latest"
         private const val ROUTE_READY_TIMEOUT_MILLIS = 60_000L
+        private const val NIGHTLY_APK_NAME = "bitchat-nightly-universal.apk"
         private const val CACHE_TTL_MILLIS = 30 * 60_000L
         private const val PREFS_NAME = "apk_release_metadata"
         private const val RATE_LIMIT_SCOPE = "github_release_metadata"
-        private const val USER_AGENT = "BitChat-Android"
+        private const val USER_AGENT = "bitchat-nightly-Android"
 
         private val SOURCE = ApkDownloadSource(
             id = DefaultApkDownloadSources.GITHUB_ID,
             displayName = "GitHub Releases",
-            latestApkUrl = "https://github.com/permissionlesstech/bitchat-android/releases/latest/" +
-                "download/bitchat-android-universal.apk"
+            latestApkUrl =
+                "https://github.com/${BuildConfig.GITHUB_RELEASE_REPOSITORY}/releases/latest/" +
+                "download/bitchat-nightly-universal.apk"
         )
 
         internal fun parseRelease(jsonString: String): Release? = runCatching {
@@ -62,8 +65,7 @@ internal class GitHubReleaseClient(
                 val asset = assets.getJSONObject(index)
                 val name = asset.optString("name")
                 val url = asset.optString("browser_download_url")
-                if (name.contains("universal", ignoreCase = true) &&
-                    name.endsWith(".apk", ignoreCase = true) &&
+                if (name == NIGHTLY_APK_NAME &&
                     url.startsWith("https://")
                 ) {
                     return Release(
