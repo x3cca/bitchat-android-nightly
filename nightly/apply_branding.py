@@ -390,7 +390,7 @@ require(nightlyReleaseRepository.matches(Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
         "        // BEGIN BITCHAT NIGHTLY BUILD CONFIG",
         "        // END BITCHAT NIGHTLY BUILD CONFIG",
         build_config_block,
-        "        testInstrumentationRunner = \"androidx.test.runner.AndroidJUnitRunner\"",
+        "        testInstrumentationRunner =",
         "nightly BuildConfig field",
     )
     text = _replace_once(
