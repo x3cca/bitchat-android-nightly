@@ -1,0 +1,151 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if this upstream commit was already released
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: permissionlesstech/bitchat-android
+  APP_ID: com.bitchat.droid.nightly
+  APK: bitchat-nightly-universal.apk
+
+jobs:
+  nightly:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Find upstream commit
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote "https://github.com/$UPSTREAM.git" refs/heads/main | cut -f1)"
+          short="${sha:0:12}"
+          if [ "$FORCE" != true ] &&
+            gh release list -R "$GITHUB_REPOSITORY" -L 50 --json tagName -q '.[].tagName' | grep -q -- "-$short"; then
+            echo "Upstream $short already released."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Android needs versionCode to always increase: use minutes since 2026-01-01.
+          code=$(( 1900000000 + ($(date -u +%s) - $(date -u -d 2026-01-01 +%s)) / 60 ))
+          {
+            echo "UPSTREAM_SHA=$sha"
+            echo "TAG=nightly-$(date -u +%Y%m%d-%H%M)-$short"
+            echo "NIGHTLY_APP_ID=$APP_ID"
+            echo "NIGHTLY_VERSION_CODE=$code"
+            echo "NIGHTLY_VERSION_SUFFIX=-nightly.$(date -u +%Y%m%d).${sha:0:7}"
+          } >> "$GITHUB_ENV"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Check out upstream
+        if: steps.plan.outputs.skip != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ env.UPSTREAM_SHA }}
+          path: app
+          persist-credentials: false
+
+      - name: Apply nightly overlay
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          RELEASE_REPO: ${{ github.repository }}
+        run: nightly/apply.sh app
+
+      - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
+        if: steps.plan.outputs.skip != 'true'
+        with:
+          distribution: temurin
+          java-version-file: app/.java-version
+
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        if: steps.plan.outputs.skip != 'true'
+
+      - name: Build APK
+        if: steps.plan.outputs.skip != 'true'
+        working-directory: app
+        env:
+          # Upstream's in-app updater only accepts APKs signed with this cert.
+          BITCHAT_GITHUB_RELEASE_CERT_SHA256: ${{ vars.NIGHTLY_CERT_SHA256 }}
+        run: ./gradlew --init-script ../nightly/nightly.init.gradle :app:assembleRelease
+
+      - name: Sign and check APK
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          KEYSTORE_B64: ${{ secrets.NIGHTLY_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.NIGHTLY_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.NIGHTLY_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.NIGHTLY_KEY_PASSWORD }}
+          EXPECTED_CERT: ${{ vars.NIGHTLY_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          tools="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          apks=(app/app/build/outputs/apk/release/*universal*.apk)
+          [ "${#apks[@]}" -eq 1 ] && [ -f "${apks[0]}" ] ||
+            { echo "expected one universal APK, got: ${apks[*]}" >&2; ls -R app/app/build/outputs/apk >&2; exit 1; }
+          keys="$(mktemp -d)"; trap 'rm -rf "$keys"' EXIT
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$keys/ks.p12"
+          mkdir -p out
+          "$tools/zipalign" -P 16 -f 4 "${apks[0]}" "$keys/aligned.apk"
+          "$tools/apksigner" sign --ks "$keys/ks.p12" --ks-type PKCS12 \
+            --ks-key-alias "$KEY_ALIAS" --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD \
+            --v4-signing-enabled false --out "out/$APK" "$keys/aligned.apk"
+
+          cert="$("$tools/apksigner" verify --print-certs "out/$APK" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)"
+          [ "$cert" = "${EXPECTED_CERT,,}" ] || { echo "signer $cert != expected $EXPECTED_CERT" >&2; exit 1; }
+          badging="$("$tools/aapt2" dump badging "out/$APK" | head -1)"
+          echo "$badging"
+          grep -q "name='$APP_ID' versionCode='$NIGHTLY_VERSION_CODE'" <<<"$badging" ||
+            { echo "unexpected package/version" >&2; exit 1; }
+          # A permission name shared with the official app would block installing both.
+          if "$tools/aapt2" dump permissions "out/$APK" | grep '^permission: ' | grep -v "$APP_ID"; then
+            echo "APK declares permissions outside $APP_ID (see above)" >&2; exit 1
+          fi
+          echo "NIGHTLY_VERSION_NAME=$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<<"$badging")" >> "$GITHUB_ENV"
+          (cd out && sha256sum "$APK" > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Publish release
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<NOTES
+          Unofficial automated nightly of bitchat for Android. Not endorsed by upstream; may be unstable.
+
+          - Upstream commit: https://github.com/$UPSTREAM/commit/$UPSTREAM_SHA
+          - Version: $NIGHTLY_VERSION_NAME ($NIGHTLY_VERSION_CODE)
+          - APK SHA-256: $(cut -d' ' -f1 out/SHA256SUMS)
+          - Signing certificate SHA-256: ${{ vars.NIGHTLY_CERT_SHA256 }}
+          NOTES
+          gh release create "$TAG" "out/$APK" out/SHA256SUMS -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "bitchat nightly $(date -u +%F) (${UPSTREAM_SHA:0:7})" \
+            --notes-file notes.md --latest
+
+          # Keep the newest 30 nightlies.
+          gh release list -R "$GITHUB_REPOSITORY" -L 200 --json tagName,createdAt \
+            -q 'sort_by(.createdAt) | reverse | .[30:] | .[].tagName' |
+            grep '^nightly-' | while read -r old; do
+              gh release delete "$old" -R "$GITHUB_REPOSITORY" -y --cleanup-tag
+            done

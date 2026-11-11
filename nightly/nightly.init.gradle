@@ -1,0 +1,13 @@
+// Gradle init script: give :app the nightly application ID and version
+// without editing upstream's build files. Values come from the environment.
+allprojects { p ->
+    if (p.path != ':app') return
+    p.pluginManager.withPlugin('com.android.application') {
+        p.androidComponents.finalizeDsl { android ->
+            def config = android.defaultConfig
+            config.applicationId = System.getenv('NIGHTLY_APP_ID')
+            config.versionCode = System.getenv('NIGHTLY_VERSION_CODE') as Integer
+            config.versionName = "${config.versionName}${System.getenv('NIGHTLY_VERSION_SUFFIX')}"
+        }
+    }
+}
